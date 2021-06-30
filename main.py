@@ -65,12 +65,15 @@ def nonlin(x: np.ndarray):  # NTFS: convert to in place operation
     return x * 0.5 * (1 + erf(x/np.sqrt(2)))   # gelu
 
 
-def softmax(x: np.ndarray): # NTFS: convert to in place operation
+def softmax(x: np.ndarray):     # NTFS: convert to in place operation
     ret = np.exp(x)
-    # print(ret)
-    sums = np.sum(ret, 1)
+    sums = np.sum(ret, 1)       # NTFS: new memory, or just use stack mem
 
-    # print('softmax:', ret, sums)
+    for row, div in zip(ret, sums):
+        row /= div
+
+    return ret
+
 
 def feed_forward(dense, x):
     assert(x.shape == (config['size']['emb_dim'], seq_len))
@@ -85,20 +88,21 @@ def self_attention(attn, x):
 
     adim = config['size']['emb_dim'] // config['size']['attn_heads']
 
-    q, k, v = attn['query_w'].dot(x), attn['key_w'].dot(x), attn['value_w'].dot(x)  # NTFS: new memory initialized
-
-    print(q.tolist())
+    # NTFS: new memory initialized
+    gq = attn['query_w'].dot(x) + attn['query_b']
+    gk = attn['key_w'  ].dot(x) + attn['key_b'  ]
+    gv = attn['value_w'].dot(x) + attn['value_b']
 
     for hdi in range(config['size']['attn_heads']):     # NTFS: loop can be parallelized
-        q, k, v = q[hdi*adim:(hdi+1)*adim, :], k[hdi*adim:(hdi+1)*adim, :], v[hdi*adim:(hdi+1)*adim, :]
-        print(hdi*adim,(hdi+1)*adim, q[2:4]) # TODO: what the hell
-        print('q', q)
-        print('k', k)
-        print('v', v)
-        scalars = q.T.dot(k) / np.sqrt(adim)
+        bq, bk, bv = gq[hdi*adim:(hdi+1)*adim], gk[hdi*adim:(hdi+1)*adim], gv[hdi*adim:(hdi+1)*adim]
+        scalars = bq.T.dot(bk) / np.sqrt(adim)
         scalars = softmax(scalars)
 
-    return x
+        for j, s in enumerate(scalars):
+            gq[hdi*adim:(hdi+1)*adim, j] = np.sum(s * bv, 1)     # NTFS: writing to gq is a memory saving technique
+
+    return attn['proj_w'].dot(gq) + attn['proj_b'] + x
+
 
 rng = default_rng(1336)
 seq_len = 5
