@@ -3,6 +3,7 @@
 
 import numpy as np
 from numpy.random import default_rng
+import math
 
 config = {
     # 'size': {
@@ -84,6 +85,13 @@ def feed_forward(dense, x):
 
 
 def self_attention(attn, x):
+    # Adds the mask so decoder cannot see values after current word
+    def mask(x):
+        new_mat = x
+        for i in range(seq_len):
+            for j in range(i+1, seq_len):
+                new_mat[i, j] = -math.inf
+        return new_mat
     assert(x.shape == (config['size']['emb_dim'], seq_len))
 
     adim = config['size']['emb_dim'] // config['size']['attn_heads']
@@ -96,13 +104,14 @@ def self_attention(attn, x):
     for hdi in range(config['size']['attn_heads']):     # NTFS: loop can be parallelized
         bq, bk, bv = gq[hdi*adim:(hdi+1)*adim], gk[hdi*adim:(hdi+1)*adim], gv[hdi*adim:(hdi+1)*adim]
         scalars = bq.T.dot(bk) / np.sqrt(adim)
-        # TODO: masked self attention (in the softmax? or -inf)
+        scalars = mask(scalars)
         scalars = softmax(scalars)
 
         for j, s in enumerate(scalars):
             gq[hdi*adim:(hdi+1)*adim, j] = np.sum(s * bv, 1)     # NTFS: writing to gq is a memory saving technique
 
     return attn['proj_w'].dot(gq) + attn['proj_b'] + x
+
 
 
 rng = default_rng(1333)
