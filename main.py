@@ -75,6 +75,15 @@ def softmax(x: np.ndarray):     # NTFS: convert to in place operation
 
     return ret
 
+def layer_norm(x: np.ndarray):
+  sums = x.sum(axis = 0)
+  means = sums/x.shape[0]
+  std = x.std(axis = 0)
+  for row in x:
+    #print(row)
+    for i in range(x.shape[1]):
+      row[i] = (row[i]-means[i])/std[i]
+  return x
 
 def feed_forward(dense, x):
     assert(x.shape == (config['size']['emb_dim'], seq_len))
