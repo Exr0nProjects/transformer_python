@@ -14,7 +14,7 @@ config = {
     #     }
     'size': {
         'emb_dim': 4,     # (attn_heads = 12) * (attn_dim = 64)
-        'stack_height': 2,
+        'stack_height': 12,
         'attn_heads': 2,
         'ctx_size': 1024,
         'vocab_size': 50257,
@@ -96,6 +96,7 @@ def self_attention(attn, x):
     for hdi in range(config['size']['attn_heads']):     # NTFS: loop can be parallelized
         bq, bk, bv = gq[hdi*adim:(hdi+1)*adim], gk[hdi*adim:(hdi+1)*adim], gv[hdi*adim:(hdi+1)*adim]
         scalars = bq.T.dot(bk) / np.sqrt(adim)
+        # TODO: masked self attention (in the softmax? or -inf)
         scalars = softmax(scalars)
 
         for j, s in enumerate(scalars):
@@ -104,18 +105,18 @@ def self_attention(attn, x):
     return attn['proj_w'].dot(gq) + attn['proj_b'] + x
 
 
-rng = default_rng(1336)
+rng = default_rng(1333)
 seq_len = 5
 
 if __name__ == '__main__':
     mats = initialize(get_shapes())
     # print(mats)
 
-    inp = rng.standard_normal((config['size']['emb_dim'], seq_len))
+    inp = rng.normal(0, 0.0002, (config['size']['emb_dim'], seq_len))
     # print(inp)
 
     for decoder in mats['decoder']:
         attn, dense = decoder.values()
         x = self_attention(attn, inp)
         inp = feed_forward(dense, x)
-        # print(inp)
+        print(inp)
