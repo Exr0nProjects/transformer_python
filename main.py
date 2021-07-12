@@ -76,11 +76,20 @@ def softmax(x: np.ndarray):     # NTFS: convert to in place operation
     return ret
 
 
+def layernorm(x: np.ndarray):
+    sums = x.sum(axis=0)
+    means = sums/x.shape[0]
+    std = x.std(axis=0)
+    for i, row in enumerate(x):
+        x[i] = (row - means) / std
+    return x
+
+
 def feed_forward(dense, x):
     assert(x.shape == (config['size']['emb_dim'], seq_len))
-    # TODO: layernorm
+    norm_x = layernorm(x)   # TODO: should layernorm happen before or after skip input
     return nonlin(dense['proj_b'] + dense['proj_w'].dot(
-           nonlin(dense[  'fc_b'] + dense[  'fc_w'].dot(x))     # NTFS: new memory initialized (emb_dim * 4, seq_len)
+           nonlin(dense[  'fc_b'] + dense[  'fc_w'].dot(norm_x))     # NTFS: new memory initialized (emb_dim * 4, seq_len)
     )) + x
 
 
@@ -92,14 +101,17 @@ def self_attention(attn, x):
             for j in range(i+1, seq_len):
                 new_mat[i, j] = -math.inf
         return new_mat
+
     assert(x.shape == (config['size']['emb_dim'], seq_len))
 
     adim = config['size']['emb_dim'] // config['size']['attn_heads']
 
+    norm_x = layernorm(x) # TODO: should the norm happen before or after skip connection input? graykode says after, and this implements after
+
     # NTFS: new memory initialized
-    gq = attn['query_w'].dot(x) + attn['query_b']
-    gk = attn['key_w'  ].dot(x) + attn['key_b'  ]
-    gv = attn['value_w'].dot(x) + attn['value_b']
+    gq = attn['query_w'].dot(norm_x) + attn['query_b']
+    gk = attn['key_w'  ].dot(norm_x) + attn['key_b'  ]
+    gv = attn['value_w'].dot(norm_x) + attn['value_b']
 
     for hdi in range(config['size']['attn_heads']):     # NTFS: loop can be parallelized
         bq, bk, bv = gq[hdi*adim:(hdi+1)*adim], gk[hdi*adim:(hdi+1)*adim], gv[hdi*adim:(hdi+1)*adim]
