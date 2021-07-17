@@ -5,6 +5,14 @@ import numpy as np
 from numpy.random import default_rng
 import math
 
+try:
+    from torch import nn
+except ImportError:
+    print('you need pytorch! https://pytorch.org/get-started/locally/')
+    exit(1)
+
+from transformers import GPT2Config, GPT2TokenizerFast, GPT2Model
+
 config = {
     # 'size': {
     #     'emb_dim': 768,     # (attn_heads = 12) * (attn_dim = 64)
@@ -124,7 +132,13 @@ def self_attention(attn, x):
 
     return attn['proj_w'].dot(gq) + attn['proj_b'] + x
 
-
+def infer(inp: np.ndarray):
+    for decoder in mats['decoder']:
+        attn, dense = decoder.values()
+        x = self_attention(attn, inp)
+        inp = feed_forward(dense, x)
+        print(inp)
+    return inp
 
 rng = default_rng(1333)
 seq_len = 5
@@ -133,11 +147,28 @@ if __name__ == '__main__':
     mats = initialize(get_shapes())
     # print(mats)
 
-    inp = rng.normal(0, 0.0002, (config['size']['emb_dim'], seq_len))
+    sz = config['size']
+    gpt2config = GPT2Config(
+            vocab_size=sz['vocab_size'],
+            n_positions=sz['ctx_size'],
+            n_ctx=sz['ctx_size'],
+            n_embd=sz['emb_dim'],
+            n_layer=sz['stack_height'],
+            n_head=sz['attn_heads'],
+            n_inner=4)
+
+    tokenizer = GPT2TokenizerFast.from_pretrained('gpt2')   # this should be gpt2 small?
+    pretrained = GPT2Model.from_pretrained('gpt2')
+
+    inp = "I like my sandwhiches with peanut butter and"
+    toks = tokenizer(inp)
+
+    print(toks['input_ids'])
+
+
+    # pretrained_hidden_states =
+
+    # inp = rng.normal(0, 0.0002, (config['size']['emb_dim'], seq_len))
     # print(inp)
 
-    for decoder in mats['decoder']:
-        attn, dense = decoder.values()
-        x = self_attention(attn, inp)
-        inp = feed_forward(dense, x)
-        print(inp)
+
