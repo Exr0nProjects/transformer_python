@@ -7,6 +7,7 @@ import math
 
 try:
     from torch import nn
+    import torch
 except ImportError:
     print('you need pytorch! https://pytorch.org/get-started/locally/')
     exit(1)
@@ -139,6 +140,59 @@ def infer(inp: np.ndarray):
         inp = feed_forward(dense, x)
         print(inp)
     return inp
+
+
+# BEGIN YOINKS from andrew
+  class PositionalEncoding(nn.Module):
+    def __init__(self,
+                 emb_size: int,
+                 dropout: float,
+                 maxlen: int = 5000):
+        super(PositionalEncoding, self).__init__()
+        pos = torch.arange(0, maxlen).reshape(maxlen, 1)
+        den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
+        pos_embedding = torch.zeros((maxlen, emb_size))
+        pos_embedding[:, 0::2] = torch.sin(pos * den)
+        pos_embedding[:, 1::2] = torch.cos(pos * den)
+        pos_embedding = pos_embedding.unsqueeze(-2)
+
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('pos_embedding', pos_embedding)
+
+    def forward(self, token_embedding: Tensor):
+        return self.dropout(token_embedding + self.pos_embedding[:token_embedding.size(0), :])
+
+# helper Module to convert tensor of input indices into corresponding tensor of token embeddings
+class TokenEmbedding(nn.Module):
+    def __init__(self, vocab_size: int, emb_size):
+        super(TokenEmbedding, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, emb_size)
+        self.emb_size = emb_size
+
+    def forward(self, tokens: Tensor):
+        return self.embedding(tokens.long()) * math.sqrt(self.emb_size)
+
+# ---------------------------------------------------------------------------------
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)    # these positional embedding impls are identical except this final transpose
+        # self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)
+
+# END YOINKS
 
 rng = default_rng(1333)
 seq_len = 5
