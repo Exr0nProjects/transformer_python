@@ -198,7 +198,11 @@ if __name__ == '__main__':
 
     got = pretrained(**toks, output_hidden_states=True)
     print(got.hidden_states)
-
+    
+    # andrew+aaron 
+    # assuming the embedding is done
+    # set got.hidden_states[1] as input???
+    
     # pretrained_hidden_states =
 
     # inp = rng.normal(0, 0.0002, (config['size']['emb_dim'], seq_len))
