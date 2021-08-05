@@ -4,6 +4,7 @@
 import numpy as np
 from numpy.random import default_rng
 import math
+from copy import deepcopy
 
 try:
     from torch import nn
@@ -44,12 +45,8 @@ def get_shapes():
                 'attn': {
                     'ln1_w': (sz['emb_dim'], 1),
                     'ln1_b': (sz['emb_dim'], 1),
-                    'query_w': (sz['emb_dim'], sz['emb_dim']),
-                    'query_b': (sz['emb_dim'], 1),
-                    'key_w':   (sz['emb_dim'], sz['emb_dim']),
-                    'key_b':   (sz['emb_dim'], 1),
-                    'value_w': (sz['emb_dim'], sz['emb_dim']),
-                    'value_b': (sz['emb_dim'], 1),
+                    'attn_w': (3*sz['emb_dim'], sz['emb_dim']),
+                    'attn_b': (sz['emb_dim'], 1),
                     'proj_w':  (sz['emb_dim'], sz['emb_dim']),
                     'proj_b':  (sz['emb_dim'], 1),
                 },
@@ -106,27 +103,33 @@ def softmax(x: np.ndarray):     # NTFS: convert to in place operation
 def layernorm(x: np.ndarray, w: np.ndarray, b: np.ndarray):
     x = np.transpose(x)
     assert(x.shape == (seq_len, config['size']['emb_dim']))
-    sums = x.sum(axis=0)
+    sums = x.sum(axis=1)
 
-    means = sums/x.shape[0]
-    std = x.std(axis=0)
-
-    for i in range(11):
-        x[i] = (x[i] - means) / std
-        x[i] = (x[i]*(w)) + b
+    means = sums/x.shape[1]
+    stdsq = x.std(axis=1).reshape(11,1)
+    stdsq = np.square(stdsq)
+    means = means.reshape(11,1)
+    x = (x-means)/np.sqrt(stdsq+1e-5)
+    x = w*x+b
 
     return np.transpose(x)
 
 
-def feed_forward(dense, x):
+'''def feed_forward(dense, x):
     assert(x.shape == (config['size']['emb_dim'], seq_len))
     norm_x = layernorm(x, dense['ln2_w'], dense['ln2_b'])   # TODO: should layernorm happen before or after skip input
     #print("Normed")
     #print((nonlin(dense[  'fc_b'] + dense[  'fc_w'].dot(norm_x)).shape))
     return nonlin(dense['proj_b'] + dense['proj_w'].dot(
            nonlin(dense[  'fc_b'] + dense[  'fc_w'].dot(norm_x))     # NTFS: new memory initialized (emb_dim * 4, seq_len)
-    )) + x
+    )) + x'''
 
+def feed_forward(dense, x):
+    assert(x.shape == (config['size']['emb_dim'], seq_len))
+    norm_x = layernorm(x, dense['ln2_w'], dense['ln2_b'])   # TODO: should layernorm happen before or after skip input
+    h = nonlin(dense[  'fc_b'] + dense[  'fc_w'].dot(norm_x))
+    h2 = dense['proj_b'] + dense['proj_w'].dot(h)
+    return h2 + x
 
 def self_attention(attn, x):
     # Adds the mask so decoder cannot see values after current word
@@ -141,50 +144,26 @@ def self_attention(attn, x):
 
     adim = config['size']['emb_dim'] // config['size']['attn_heads']
 
-    norm_x = layernorm(x, attn['ln1_w'], attn['ln1_b']) # TODO: should the norm happen before or after skip connection input? graykode says after, and this implements after
+    norm_x = layernorm(x, attn['ln1_w'], attn['ln1_b'])
 
     # NTFS: new memory initialized
-    gq = (attn['query_w'].dot(norm_x) + attn['query_b'])
-    gk = (attn['key_w'  ].dot(norm_x) + attn['key_b'  ])
-    gv = (attn['value_w'].dot(norm_x) + attn['value_b'])
+    at = attn['attn_w'].dot(norm_x) + attn['attn_b']
+    gq, gk, gv = np.vsplit(at, 3)
   
-    for hdi in range(config['size']['attn_heads']):     # NTFS: loop can be parallelized
+    for hdi in range(12):#range(config['size']['attn_heads']):     # NTFS: loop can be parallelized
         bq, bk, bv = gq[hdi*adim:(hdi+1)*adim], gk[hdi*adim:(hdi+1)*adim], gv[hdi*adim:(hdi+1)*adim]
-        scalars = bq.T.dot(bk) / np.sqrt(adim)
-        #scalars = mask(scalars)
-        #scalars = softmax(scalars)
-        #print("Number Nan before softmax")
-        #print(np.count_nonzero(np.isnan(scalars)))
-        #print(scalars)
-        scalars = casually_masked_softmax(scalars)
-        #print("Number Nan after softmax")
-        #print(np.count_nonzero(np.isnan(scalars)))
-        #print("after softmax")
-        #print(scalars)
-
-        for j, s in enumerate(scalars):
-            gq[hdi*adim:(hdi+1)*adim, j] = np.sum(s * bv, 1)     # NTFS: writing to gq is a memory saving technique
-
-    #print("Number Nan")
-    #print(np.count_nonzero(np.isnan(gq)))
-
-    #print("after qkv")
-    #print(gq)
-
+        scalars = bk.T.dot(bq) / np.sqrt(adim)
+        scalars = np.transpose(casually_masked_softmax(np.transpose(scalars)))
+        gq[hdi*adim:(hdi+1)*adim] = bv.dot(scalars)
 
     return attn['proj_w'].dot(gq) + attn['proj_b'] + x
 
 def infer(inp: np.ndarray):
     i = 0
     for decoder in mats['decoder']:
-        #print("starting")
         attn, dense = decoder.values()
         x = self_attention(attn, inp)
-        print("done w attention")
-        print(x)
         inp = feed_forward(dense, x)
-        print("done")
-        print(inp)
     return inp
 
 
@@ -242,43 +221,22 @@ seq_len = 11
     print(toks)
 
     got = pretrained(**toks, output_hidden_states=True)
-    print(got.hidden_states[6])
-    print(got.hidden_states[7])
-    print("Num H states")
-    print(len(got.hidden_states))
 
-    # pretrained_hidden_states =
+    mats['decoder'] = [deepcopy(a) for a in mats['decoder']]
 
-    # inp = rng.normal(0, 0.0002, (config['size']['emb_dim'], seq_len))
-    # print(inp)
-
-    # Print model's state_dict
-    #print("Model's state_dict:")
-    #for param_tensor in pretrained.state_dict():
-        #print(param_tensor, "\t", pretrained.state_dict()[param_tensor].size())
-        #print(pretrained.state_dict()[param_tensor].numpy())
-
-    head = 0
     for head in range(0, 12):
           #print(pretrained.state_dict()["h."+str(head)+".mlp.c_proj.bias"].numpy()[0])
           mats['decoder'][head]['attn']['ln1_b'] = pretrained.state_dict()["h."+str(head)+".ln_1.bias"].numpy()#.reshape(-1,1)
-          mats['decoder'][head]['attn']['ln1_w'] = pretrained.state_dict()["h."+str(head)+".ln_2.weight"].numpy()
-          mats['decoder'][head]['attn']['query_b'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.bias"].numpy()[0:768]
-          mats['decoder'][head]['attn']['query_w'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.weight"].numpy()[0:768, 0:768]
-          mats['decoder'][head]['attn']['query_b'] = mats['decoder'][head]['attn']['query_b'].reshape(-1, 1)
-          #print(mats['decoder'][head]['attn']['query_b'].shape)
-          #print(mats['decoder'][head]['attn']['query_w'].shape)
-          mats['decoder'][head]['attn']['key_b'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.bias"].numpy()[768:768*2]
-          mats['decoder'][head]['attn']['key_w'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.weight"].numpy()[0:768, 768:768*2]
-          mats['decoder'][head]['attn']['key_b'] = mats['decoder'][head]['attn']['key_b'].reshape(-1, 1)
-          mats['decoder'][head]['attn']['value_b'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.bias"].numpy()[768*2:768*3]
-          mats['decoder'][head]['attn']['value_w'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.weight"].numpy()[0:768, 768*2:768*3]
-          mats['decoder'][head]['attn']['value_b'] = mats['decoder'][head]['attn']['value_b'].reshape(-1, 1)
+          mats['decoder'][head]['attn']['ln1_w'] = pretrained.state_dict()["h."+str(head)+".ln_1.weight"].numpy()
+          mats['decoder'][head]['attn']['attn_w'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.weight"].T.numpy()
+          mats['decoder'][head]['attn']['attn_b'] = pretrained.state_dict()["h."+str(head)+".attn.c_attn.bias"].numpy().reshape(-1, 1)
           mats['decoder'][head]['attn']['proj_b'] = pretrained.state_dict()["h."+str(head)+".attn.c_proj.bias"].numpy()
-          mats['decoder'][head]['attn']['proj_w'] = pretrained.state_dict()["h."+str(head)+".attn.c_proj.weight"].numpy()
+          mats['decoder'][head]['attn']['proj_w'] = pretrained.state_dict()["h."+str(head)+".attn.c_proj.weight"].T.numpy()
           mats['decoder'][head]['attn']['proj_b'] = mats['decoder'][head]['attn']['proj_b'].reshape(-1, 1)
           #Dense stuff
           mats['decoder'][head]['dense']['ln2_b'] = pretrained.state_dict()["h."+str(head)+".ln_2.bias"].numpy()#.reshape(-1,1)
+          print(head)
+          print(mats['decoder'][head]['dense']['ln2_b'][0:5])
           mats['decoder'][head]['dense']['ln2_w'] = pretrained.state_dict()["h."+str(head)+".ln_2.weight"].numpy()
           mats['decoder'][head]['dense']['proj_b'] = pretrained.state_dict()["h."+str(head)+".mlp.c_proj.bias"].numpy()
           mats['decoder'][head]['dense']['proj_w'] = pretrained.state_dict()["h."+str(head)+".mlp.c_proj.weight"].T.numpy()
@@ -286,10 +244,13 @@ seq_len = 11
           mats['decoder'][head]['dense']['fc_b'] = pretrained.state_dict()["h."+str(head)+".mlp.c_fc.bias"].numpy()
           mats['decoder'][head]['dense']['fc_w'] = pretrained.state_dict()["h."+str(head)+".mlp.c_fc.weight"].T.numpy()
           mats['decoder'][head]['dense']['fc_b'] = mats['decoder'][head]['dense']['fc_b'].reshape(-1,1)
-        
-print(got.hidden_states[6][0].T.detach().numpy().shape)
-print(got.hidden_states[5][0].T.detach())
-print(got.hidden_states[6][0].T.detach())
-print(got.hidden_states[7][0].T.detach())
-print(got.hidden_states[8][0].T.detach())
-infer(got.hidden_states[5][0].T.detach().numpy())
+
+    print(pretrained.state_dict()["h.11.ln_2.bias"].numpy()[0:5])
+
+    for head in range(0, 12):
+      mats['decoder'][head]['dense']['ln2_b'] = np.copy(pretrained.state_dict()["h."+str(head)+".ln_2.bias"].numpy())
+      print(head)
+      print(mats['decoder'][head]['dense']['ln2_b'][0:5])
+    for head in range(0, 12):
+      print(head)
+      print(mats['decoder'][head]['dense']['ln2_b'][0:5])
